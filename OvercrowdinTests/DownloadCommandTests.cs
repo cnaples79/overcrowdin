@@ -14,13 +14,6 @@ namespace OvercrowdinTests
 
 		private void MockPrepareToDownload(int projectId, string projectName, bool useBranch, string branch)
 		{
-			_mockHttpClient.Expect("https://api.crowdin.com/api/v2/projects?limit=25&offset=0&hasManagerAccess=0").Respond(
-				"application/json", $"{{'data':[{{'data': {{'id': {projectId},'identifier': '{projectName}','targetLanguages':[{{'id':'fr','name':'French'}}]}}}}]}}");
-			if (useBranch)
-			{
-				_mockHttpClient.Expect($"https://api.crowdin.com/api/v2/projects/{projectId}/branches?limit=25&offset=0").Respond(
-					"application/json", $"{{'data':[{{'name':'{branch}', 'id':1}}]}}");
-			}
 			_mockHttpClient.Expect("https://api.crowdin.com/api/v2/projects?limit=500&offset=0&hasManagerAccess=0").Respond(
 				"application/json", $"{{'data':[{{'data': {{'id': {projectId},'identifier': '{projectName}','targetLanguages':[{{'id':'fr','name':'French'}}]}}}}]}}");
 			if (useBranch)
@@ -41,6 +34,27 @@ namespace OvercrowdinTests
 			_mockConfig.Setup(config => config["base_path"]).Returns(".");
 			var result = await DownloadCommand.DownloadFromCrowdin(_mockConfig.Object, new DownloadCommand.Options { Filename = "done.zip" }, mockFileSystem.FileSystem, MockApiFactory);
 			Assert.Equal(1, result);
+		}
+
+		[Fact]
+		public async Task MissingBranchReturnsFailure()
+		{
+			const string outputFileName = "test.zip";
+			const string apiKeyEnvVar = "EXPORTKEYFORTEST";
+			const string projectName = "testcrowdinproject";
+			const string baseDir = "test";
+			Environment.SetEnvironmentVariable(apiKeyEnvVar, "fakeapikey");
+			const string branch = "branch-name";
+			_mockConfig.Setup(config => config["api_key_env"]).Returns(apiKeyEnvVar);
+			_mockConfig.Setup(config => config["project_identifier"]).Returns(projectName);
+			_mockConfig.Setup(config => config["base_path"]).Returns(baseDir);
+			_mockConfig.Setup(config => config["branch"]).Returns(branch);
+			// Set up the calls to check the project and branch
+			MockPrepareToDownload(_testProjId, projectName, true, $"unexpected-{branch}");
+			var exception = await Assert.ThrowsAsync<Exception>(() => DownloadCommand.DownloadFromCrowdin(_mockConfig.Object, new DownloadCommand.Options { Filename = outputFileName },
+				new MockFileSystem().FileSystem, MockApiFactory, new MockHttpClientFactory(_mockHttpClient)));
+			Assert.Contains(branch, exception.Message);
+			_mockHttpClient.VerifyNoOutstandingExpectation();
 		}
 
 		[Theory]
@@ -71,8 +85,8 @@ namespace OvercrowdinTests
 
 			_mockHttpClient.Expect("https://fakeurl.com").Respond("application/octet-stream", "junk");
 			var result = await DownloadCommand.DownloadFromCrowdin(_mockConfig.Object, new DownloadCommand.Options { Filename = outputFileName }, mockFileSystem.FileSystem, MockApiFactory, new MockHttpClientFactory(_mockHttpClient));
-			Assert.Equal(0, result);
 			_mockHttpClient.VerifyNoOutstandingExpectation();
+			Assert.Equal(0, result);
 		}
 
 		[Theory]
@@ -107,7 +121,7 @@ namespace OvercrowdinTests
 		}
 
 		[Fact]
-		public async Task ErrorsAreReported()
+		public async Task UnexpectedErrorsAreReported()
 		{
 			var mockFileSystem = new MockFileSystem();
 			const string outputFileName = "test.zip";
@@ -120,11 +134,11 @@ namespace OvercrowdinTests
 			_mockConfig.Setup(config => config["project_identifier"]).Returns(projectName);
 			_mockConfig.Setup(config => config["base_path"]).Returns(baseDir);
 			var options = new DownloadCommand.Options { Filename = outputFileName };
-			// Set up the call to Download
 			mockFileSystem.Directory.CreateDirectory(baseDir);
+			// Set up the call to get the project but not the builds; this will result in an arbitrary exception 
 			MockPrepareToDownload(projectId, projectName, false, null);
-			var result = await DownloadCommand.DownloadFromCrowdin(_mockConfig.Object, options, mockFileSystem.FileSystem, MockApiFactory);
-			Assert.Equal(1, result);
+			var exception = await Assert.ThrowsAsync<MockHttpMatchException>(() => DownloadCommand.DownloadFromCrowdin(_mockConfig.Object, options, mockFileSystem.FileSystem, MockApiFactory));
+			Assert.Contains("Failed to match a mocked request for GET https://api.crowdin.com/api/v2/projects/44444/translations/builds?limit=500&offset=0", exception.Message);
 		}
 	}
 

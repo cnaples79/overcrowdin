@@ -19,7 +19,7 @@ using File = Crowdin.Api.SourceFiles.File;
 
 namespace Overcrowdin
 {
-	public abstract class CrowdInHelperBase
+	public abstract class CrowdinHelperBase
 	{
 		#region Member variables
 		protected readonly ICrowdinApiClient _client;
@@ -31,6 +31,8 @@ namespace Overcrowdin
 
 		protected Project _project;
 		protected long? _branchId;
+
+		protected abstract bool CreateBranchIfNeeded { get; }
 
 		protected List<TranslationProjectBuild> _existingTranslationBuilds;
 		protected List<FileInfoCollectionResource> _existingFiles;
@@ -49,7 +51,7 @@ namespace Overcrowdin
 		#endregion
 
 		#region Constructor
-		protected CrowdInHelperBase(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory)
+		protected CrowdinHelperBase(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory)
 		{
 			_projectStr = settings.Project;
 			_branch = string.IsNullOrEmpty(settings.Branch) ? "None" : settings.Branch;
@@ -64,25 +66,22 @@ namespace Overcrowdin
 
 		#region Protected helper methods
 		protected static async Task<T> Initialize<T>(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory,
-			Func<CrowdinProjectSettings, IFileSystem, ICrowdinClientFactory, IHttpClientFactory, T> createHelper) where T : CrowdInHelperBase
+			Func<CrowdinProjectSettings, IFileSystem, ICrowdinClientFactory, IHttpClientFactory, T> createHelper) where T : CrowdinHelperBase
 		{
 			if (settings == null)
 				return null;
 
-			T crowdIn = createHelper(settings, fs, apiFactory, factory);
+			T crowdin = createHelper(settings, fs, apiFactory, factory);
 
-			Console.WriteLine("Initializing CrowdIn...");
+			Console.WriteLine("Initializing Crowdin...");
 
-			var initialized = await crowdIn.InitializeInternal();
+			await crowdin.InitializeInternal();
 
-			if (!initialized)
-				return null;
-
-			Console.WriteLine("CrowdIn initialization complete");
-			return crowdIn;
+			Console.WriteLine("Crowdin initialization complete");
+			return crowdin;
 		}
 
-		protected virtual async Task<bool> InitializeInternal()
+		protected virtual async Task InitializeInternal()
 		{
 			Console.WriteLine("    Checking project...");
 			List<Project> projects = await GetFullList((offset, count) => _client.ProjectsGroups.ListProjects<Project>(limit: count, offset: offset));
@@ -96,36 +95,36 @@ namespace Overcrowdin
 
 			if (_project == null)
 			{
-				Console.Error.WriteLine($"Project matching '{_projectStr}' could not be found. Check to make sure the user that generated the access token has access to the project.");
-				return false;
+				throw new Exception($"Project matching '{_projectStr}' could not be found. Check to make sure the user that generated the access token has access to the project.");
 			}
 
 			// check to see if branch is needed
 			if (_branch.Equals("none", StringComparison.OrdinalIgnoreCase))
 			{
 				_branchId = null;
-				return true;
+				return;
 			}
 
 			Console.WriteLine("    Checking branch...");
 			List<Branch> branches = await GetFullList((offset, count) => _branchExecutor.ListBranches(_project.Id, null, count, offset));
-			if (int.TryParse(_branch, out var branchNbr))
+			if (int.TryParse(_branch, out var branchNbr) && branches.Exists(p => p.Id == branchNbr))
 				_branchId = branchNbr;
 			else
-				_branchId = branches.Find(p => p.Name.Equals(_branch, StringComparison.OrdinalIgnoreCase))?.Id ?? -1;
+				_branchId = branches.Find(p => p.Name.Equals(_branch, StringComparison.OrdinalIgnoreCase))?.Id;
 
-			if (!branches.Exists(p => p.Id == _branchId))
+			if (_branchId == null)
 			{
+				if (!CreateBranchIfNeeded)
+				{
+					throw new Exception($"Branch matching '{_branch}' could not be found in the project {_projectStr}. Branches: {string.Join(", ", branches.Select(b => b.Name))}");
+				}
 				Console.WriteLine($"Branch matching '{_branch}' could not be found in the project {_projectStr}, adding it.");
 				var addedBranch = await _branchExecutor.AddBranch(_project.Id, new AddBranchRequest { Name = _branch });
 				_branchId = addedBranch.Id;
-				return true;
 			}
-
-			return true;
 		}
 
-		protected async Task<bool> PrepareForUploads()
+		protected async Task PrepareForUploads()
 		{
 			Console.WriteLine("    Loading existing file list...");
 			_existingFiles = await GetFullList((offset, count) => _fileExecutor.ListFiles<FileInfoCollectionResource>(_project.Id, count, offset, _branchId, recursion: 1));
@@ -139,12 +138,30 @@ namespace Overcrowdin
 			List<StorageResource> existingStorages = await GetFullList((offset, count) => _client.Storage.ListStorages(count, offset));
 			foreach (StorageResource s in existingStorages)
 				await _client.Storage.DeleteStorage(s.Id);
+		}
 
-			return true;
+		protected async Task<int> DeleteFilesInternal(IEnumerable<string> filePaths)
+		{
+			var deletedCount = 0;
+			foreach (var path in filePaths)
+			{
+				var normalizedPath = path.Replace(Path.DirectorySeparatorChar, '/');
+				var existing = _existingFiles.FirstOrDefault(f =>
+					string.Equals(f.Path, normalizedPath, StringComparison.OrdinalIgnoreCase));
+				if (existing == null)
+				{
+					continue;
+				}
+
+				await _fileExecutor.DeleteFile(_project.Id, existing.Id);
+				deletedCount++;
+			}
+
+			return deletedCount;
 		}
 
 		/// <summary>
-		/// Helper method to get the full count of items back from a call to the CrowdIn API (which has a limit of 500 per call)
+		/// Helper method to get the full count of items back from a call to the Crowdin API (which has a limit of 500 per call)
 		/// </summary>
 		protected static async Task<List<T>> GetFullList<T>(Func<int, int, Task<ResponseList<T>>> getTruncatedList)
 		{

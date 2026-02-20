@@ -1,17 +1,18 @@
 using System;
+using System.Collections.Generic;
 using System.IO.Abstractions;
 using System.Threading.Tasks;
 using Crowdin.Api.SourceFiles;
 
 namespace Overcrowdin
 {
-	internal sealed class CrowdInUploadHelper : CrowdInHelperBase
+	internal sealed class CrowdinUploadHelper : CrowdinHelperBase
 	{
 		#region Member variables
 		#endregion
 
 		#region Constructor
-		private CrowdInUploadHelper(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory = null) : base(settings, fs, apiFactory, factory)
+		private CrowdinUploadHelper(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory = null) : base(settings, fs, apiFactory, factory)
 		{
 		}
 		#endregion
@@ -23,9 +24,9 @@ namespace Overcrowdin
 		#endregion
 
 		#region Public methods
-		public static async Task<CrowdInUploadHelper> Create(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory = null)
+		public static async Task<CrowdinUploadHelper> Create(CrowdinProjectSettings settings, IFileSystem fs, ICrowdinClientFactory apiFactory, IHttpClientFactory factory = null)
 		{
-			return await Initialize(settings, fs, apiFactory, factory, (s, f, a, h) => new CrowdInUploadHelper(s, f, a, h));
+			return await Initialize(settings, fs, apiFactory, factory, (s, f, a, h) => new CrowdinUploadHelper(s, f, a, h));
 		}
 
 		public async Task UploadFile(string fileData, string filePath, FileParameters parameters)
@@ -43,26 +44,20 @@ namespace Overcrowdin
 			}
 		}
 
-		[Obsolete]
-		public async Task<int> CleanupExtraneousFiles()
+		public async Task<int> DeleteFiles(IEnumerable<string> filePaths)
 		{
-			// Only delete files if there were no errors since errors could cause the list-of-files-to-be-deleted
-			// to contain files that just failed to upload.
-			if (_existingFiles.Count == 0 || FileErrorCount > 0)
-				return 0;
-
-			return await CleanUpExtraneousFilesInternal();
+			return await DeleteFilesInternal(filePaths);
 		}
 		#endregion
 
-		#region Overrides of CrowdInHelper
-		protected override async Task<bool> InitializeInternal()
-		{
-			bool result = await base.InitializeInternal();
-			if (!result)
-				return false;
+		#region Overrides of CrowdinHelperBase
+		protected override bool CreateBranchIfNeeded => true;
 
-			return await PrepareForUploads();
+		protected override async Task InitializeInternal()
+		{
+			await base.InitializeInternal();
+
+			await PrepareForUploads();
 		}
 		#endregion
 
